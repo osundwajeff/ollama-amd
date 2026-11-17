@@ -1,0 +1,31 @@
+services:
+  ollama_amd:
+    container_name: ollama_amd
+    build: .
+    privileged: true
+    network_mode: host
+    environment:
+      - OLLAMA_DEBUG=1
+      - AMD_LOG_LEVEL=3
+      # rocminfo | grep -E "gfx|Device Name"
+      - HSA_OVERRIDE_GFX_VERSION=10.3.0
+      - AMD_SERIALIZE_KERNEL=3
+      # Pinning "rocm" makes newer Ollama skip its versioned rocm_v7_2 runner dir,
+      # so no GPU is detected. Auto-discovery picks ROCm on its own.
+      # - OLLAMA_LLM_LIBRARY=rocm
+      - OLLAMA_HOST=0.0.0.0:11435
+    devices:
+      # ls /dev/dri/render*
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "video"
+      - "render"
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - /home/jeff/ollama/:/root/.ollama/
+    tty: true
