@@ -55,7 +55,7 @@ this server over the host network.
 | Variable | Why |
 |---|---|
 | `HSA_OVERRIDE_GFX_VERSION=10.3.0` | **The important one.** The RX 6750 XT is `gfx1031`, which ROCm doesn't officially support. RDNA2 kernels are identical across the family, so we tell ROCm it's a `gfx1030` (RX 6800). For other cards: RDNA1 → `10.1.0`, gfx1032 → `10.3.0`, RDNA3 (gfx1101/1102) → `11.0.2` |
-| `OLLAMA_LLM_LIBRARY=rocm` | Force the ROCm backend — no silent CPU fallback |
+| `OLLAMA_LLM_LIBRARY=rocm` (commented out) | In Ollama ≥ 0.40, pinning `rocm` makes discovery skip the versioned `rocm_v7_2` runner dir — no GPU is detected and everything silently falls back to CPU. Leave it unset; auto-discovery picks ROCm on its own |
 | `OLLAMA_DEBUG=1` | Verbose server logs (shows VRAM allocation, runner selection) |
 | `AMD_LOG_LEVEL=3` | Verbose AMD runtime logs |
 | `AMD_SERIALIZE_KERNEL=3` | Serializes kernel launches — a stability workaround for gfx1031. Costs some performance; try removing it if things are stable |
@@ -86,8 +86,12 @@ curl http://localhost:11435/api/version
 # 4. Pull a model
 docker compose exec ollama_amd ollama pull llama3.1:8b
 
+# docker compose exec ollama_amd ollama pull qwen2.5-coder:14b
+
 # 5. Chat
 docker compose exec ollama_amd ollama run llama3.1:8b
+
+# docker compose exec ollama_amd ollama run qwen2.5-coder:14b
 ```
 
 What happens at each stage:
@@ -96,7 +100,7 @@ What happens at each stage:
 - **pull** — weights download into `~/ollama/models` on the host and load into VRAM on demand.
 - **run** — an interactive chat session; the first prompt pays a one-time load cost, then generation runs on the GPU.
 
-## Which models fit (12 GB VRAM, RX 6700 XT)
+## Which models fit (12 GB VRAM, RX 6750 XT)
 
 Ollama defaults to Q4 quantization. Weights must fit in VRAM with ~1.5 GB headroom
 for context/KV cache, or layers spill to CPU and get **much** slower.
@@ -141,6 +145,8 @@ watch -n 1 'docker exec ollama_amd rocm-smi --showuse --showmemuse vram'
 
 ```bash
 docker compose exec ollama_amd ollama run llama3.1:8b --verbose
+
+# docker compose exec ollama_amd ollama run qwen2.5-coder:14b
 ```
 
 `--verbose` prints per-request stats after each response:
@@ -150,6 +156,21 @@ docker compose exec ollama_amd ollama run llama3.1:8b --verbose
 While a prompt is generating, `radeontop`/`nvtop` should show GPU usage spike and
 VRAM jump by the model's size. If VRAM stays flat and CPU spikes instead, the ROCm
 runner didn't engage — check `ollama ps` and the debug logs.
+
+### Example: what a healthy run looks like
+
+**Idle — server up, no model loaded** (`radeontop` on the host):
+
+![GPU idle before loading a model](img/01-initial.png)
+
+**Generating — inside `ollama run llama3.1:8b --verbose`:**
+
+![GPU usage spiking during generation](img/02-running.png)
+
+**After the run — model stays resident in VRAM** (default 5-minute keep-alive,
+so the next prompt skips the load cost):
+
+![GPU after run with model still in VRAM](img/03-after.png)
 
 **Quick sanity checks:**
 
@@ -172,8 +193,14 @@ OLLAMA_HOST=localhost:11435 ollama run llama3.1:8b
 
 - **Container exits / no GPU found** — verify the device nodes exist on the host:
   `ls /dev/kfd /dev/dri/render*` (needs the `amdgpu` kernel driver loaded).
-- **Model runs on CPU (`ollama ps` shows CPU%)** — check `OLLAMA_LLM_LIBRARY=rocm` is set
-  and the logs mention the ROCm runner; a missing hipBLAS usually means base-image drift.
+- **Server starts but GPU isn't used** (`inference compute` shows only `id=cpu`, `total_vram="0 B"`) —
+  GPU discovery was skipped. Two checks:
+  1. Is the GPU visible to ROCm? `docker exec ollama_amd rocminfo | grep -E "Marketing Name|gfx"`
+     should list `gfx1030`. If not, it's a host driver issue — check `ls /dev/kfd` and `lsmod | grep amdgpu`.
+  2. Look for `skipping available library at user's request` in `docker logs ollama_amd`. Newer Ollama
+     ships versioned runner dirs (`rocm_v7_2`), and setting `OLLAMA_LLM_LIBRARY=rocm` makes discovery
+     skip that dir entirely. Leave it unset, then `docker compose up -d --force-recreate`. Success:
+     `inference compute" ... library=ROCm compute=gfx1030 ... total="12.0 GiB"`
 - **Crashes / hangs on gfx1031** — `AMD_SERIALIZE_KERNEL=3` is already the workaround;
   also try a smaller `num_ctx`.
 - **Port conflict / wrong port** — this setup listens on **11435**; every example online
