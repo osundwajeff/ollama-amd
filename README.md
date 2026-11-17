@@ -213,3 +213,13 @@ docker compose down          # stops and removes the container (models are kept)
 du -sh ~/ollama              # see how much space models take
 docker compose down --rmi all  # also remove the built image
 ```
+
+## Acknowledgments
+
+Inspired by [ollama/ollama#6003 — “AMD Radeon RX 6750 XT Support”](https://github.com/ollama/ollama/issues/6003),
+where the `HSA_OVERRIDE_GFX_VERSION=10.3.0` + `AMD_SERIALIZE_KERNEL=3` combination was worked out,
+and where the docker-compose examples this repo builds on were posted. Differences here:
+
+- the Ollama download is baked into the Dockerfile instead of running at every container start
+- `OLLAMA_LLM_LIBRARY` is left unset — the version pinned in the issue's compose makes newer
+  Ollama skip its `rocm_v7_2` runner and silently fall back to CPU (see Troubleshooting)
